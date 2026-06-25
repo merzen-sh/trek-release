@@ -1,0 +1,57 @@
+name: "Trek Release"
+description: "Package a FiveM resource for release"
+author: "Mark"
+
+inputs:
+  input:
+    description: "Input resource directory"
+    required: true
+  name:
+    description: "Package name"
+    required: true
+  version:
+    description: "Package version"
+    required: true
+  output:
+    description: "Output directory"
+    required: false
+    default: "."
+  cli-version:
+    description: "Trek Release CLI version to use (default: latest)"
+    required: false
+    default: "latest"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download trek-release CLI
+      shell: bash
+      run: |
+        REPO="${{ github.action_repository }}"
+        if [ "${{ inputs.cli-version }}" = "latest" ]; then
+          URL=$(curl -sL "https://api.github.com/repos/${REPO}/releases/latest" | jq -r '.assets[] | select(.name | endswith(".tar.gz")) | .browser_download_url')
+        else
+          URL="https://github.com/${REPO}/releases/download/v${{ inputs.cli-version }}/trek-release-v${{ inputs.cli-version }}.tar.gz"
+        fi
+        curl -sL "$URL" -o /tmp/trek-release.tar.gz
+        cd /tmp && tar xzf trek-release.tar.gz
+        install -m 755 /tmp/trek-release-v* /usr/local/bin/trek-release
+
+    - name: Run pack
+      shell: bash
+      run: |
+        trek-release pack \
+          --input "${{ inputs.input }}" \
+          --name "${{ inputs.name }}" \
+          --version "${{ inputs.version }}" \
+          --output "${{ inputs.output }}"
+
+    - name: Upload pack artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.name }}-${{ inputs.version }}
+        path: ${{ inputs.output }}/${{ inputs.name }}-${{ inputs.version }}.zip
+
+branding:
+  icon: "package"
+  color: "blue"
