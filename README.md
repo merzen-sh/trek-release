@@ -1,14 +1,14 @@
 # trek-release
 
-Package FiveM resources for release. Validates `fxmanifest.lua` references, packs only declared files into a `.zip` archive.
+Package FiveM resources for release. Walks the input directory and packs files matching patterns in `.trek-pack` into a `.zip` archive.
 
 ## CLI
 
 ```bash
-trek-release pack --input ./my-resource --name my-resource --version 1-0-0 --output ./dist
+trek-release pack --input ./my-resource --name my-resource --version 1.0.0 --output ./dist
 ```
 
-Creates `./dist/my-resource-1-0-0.zip` containing only files referenced in `fxmanifest.lua`.
+Creates `./dist/my-resource-1.0.0.zip` containing files matched by `.trek-pack` patterns.
 
 ### Options
 
@@ -18,30 +18,20 @@ Creates `./dist/my-resource-1-0-0.zip` containing only files referenced in `fxma
 | `-n, --name` | Package name (used in output filename) |
 | `-v, --version` | Package version (used in output filename) |
 | `-o, --output` | Output directory (default: `.`) |
+| `-s, --summary` | Print a markdown summary after packing |
+| `--dry-run` | Print files that would be packed without creating the zip |
 
-## GitHub Action
+## `.trek-pack` file
 
-```yaml
-- uses: merzen-sh/trek-release@v1
-  with:
-    input: ./trek-core
-    name: trek-core
-    version: 1-0-0
+Place a `.trek-pack` file in the resource root to control which files are included. Uses glob patterns — one per line, blank lines and `#` comments are ignored. If no `.trek-pack` exists, all files are included.
+
+```
+fxmanifest.lua
+client/**/*.lua
+server/**/*.lua
+config.json
+!config.secret.json
 ```
 
-Uploads `trek-core-1-0-0.zip` as a workflow artifact.
+Lines starting with `!` exclude matching files (takes precedence over include patterns).
 
-### Action inputs
-
-| Input | Required | Default | Description |
-|---|---|---|---|
-| `input` | yes | — | Input resource directory |
-| `name` | yes | — | Package name |
-| `version` | yes | — | Package version |
-| `output` | no | `.` | Output directory |
-| `cli-version` | no | `latest` | CLI version to download |
-
-## Requirements
-
-- FiveM resource with valid `fxmanifest.lua`
-- All files referenced in the manifest must exist on disk
