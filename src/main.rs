@@ -1,12 +1,13 @@
-use std::fs;
+use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use flate2::write::GzEncoder;
-use flate2::Compression;
-use zip::write::SimpleFileOptions;
+use globset::{Glob, GlobSet, GlobSetBuilder};
+use walkdir::WalkDir;
+use zip::CompressionMethod;
 use zip::ZipWriter;
+use zip::write::FileOptions;
 
 #[derive(Parser)]
 #[command(name = "trek-release")]
@@ -35,232 +36,218 @@ enum Commands {
         /// Package version
         #[arg(short, long)]
         version: String,
+
+        /// Print a markdown summary of the packed files
+        #[arg(short, long)]
+        summary: bool,
+
+        /// Print files that would be packed without creating the zip
+        #[arg(long)]
+        dry_run: bool,
     },
-}
-
-fn display_files(input: &Path) {
-    println!("\nFiles:");
-    walk_dir(input, input, 0);
-}
-
-fn walk_dir(base: &Path, dir: &Path, depth: usize) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        let mut entries: Vec<_> = entries
-            .flatten()
-            .filter(|e| e.file_name() != ".git")
-            .collect();
-        entries.sort_by_key(|e| e.file_name());
-
-        for entry in &entries {
-            let path = entry.path();
-            let relative = path.strip_prefix(base).unwrap_or(&path);
-            let indent = "  ".repeat(depth);
-            if path.is_dir() {
-                println!("{}{}/", indent, relative.display());
-                walk_dir(base, &path, depth + 1);
-            } else {
-                println!("{}{}", indent, relative.display());
-            }
-        }
-    }
-}
-
-fn get_manifest_paths(input: &Path) -> Vec<String> {
-    let manifest_path = input.join("fxmanifest.lua");
-    let content = match fs::read_to_string(&manifest_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut paths = Vec::new();
-    let lines: Vec<&str> = content.lines().collect();
-    let mut i = 0;
-
-    while i < lines.len() {
-        let line = lines[i].trim();
-
-        let has_key = line.contains("_scripts")
-            || line.contains("_script")
-            || line.contains("files")
-            || line.contains("ui_page")
-            || line.contains("loadscreen");
-
-        if !has_key || !line.contains('{') {
-            i += 1;
-            continue;
-        }
-
-        let start = line.find('{').unwrap();
-        let mut block = String::from(&line[start + 1..]);
-
-        let open = line[start..].matches('{').count();
-        let close = line[start..].matches('}').count();
-        let mut depth = open - close;
-
-        i += 1;
-
-        while depth > 0 && i < lines.len() {
-            let l = lines[i].trim();
-            depth += l.matches('{').count();
-            depth -= l.matches('}').count();
-            block.push(' ');
-            block.push_str(l);
-            i += 1;
-        }
-
-        if let Some(end) = block.rfind('}') {
-            block = block[..end].to_string();
-        }
-
-        for part in block.split(',') {
-            let cleaned = part
-                .trim()
-                .trim_matches('\'')
-                .trim_matches('"')
-                .trim();
-            if !cleaned.is_empty() && !cleaned.starts_with("--") {
-                paths.push(cleaned.to_string());
-            }
-        }
-    }
-
-    paths
-}
-
-fn validate_manifest_files(input: &Path) -> Vec<String> {
-    let manifest_path = input.join("fxmanifest.lua");
-    if !manifest_path.exists() {
-        eprintln!("Error: missing fxmanifest.lua");
-        std::process::exit(1);
-    }
-
-    let manifest_paths = get_manifest_paths(input);
-    if manifest_paths.is_empty() {
-        eprintln!("Error: no script files declared in fxmanifest.lua");
-        std::process::exit(1);
-    }
-
-    for p in &manifest_paths {
-        let full_path = input.join(p);
-        if !full_path.exists() {
-            eprintln!("Error: manifest references '{}' but file not found", p);
-            std::process::exit(1);
-        }
-    }
-
-    manifest_paths
-}
-
-fn read_file_bytes(path: &Path) -> Vec<u8> {
-    let mut buf = Vec::new();
-    fs::File::open(path)
-        .unwrap()
-        .read_to_end(&mut buf)
-        .unwrap();
-    buf
-}
-
-fn pack_zip(input: &Path, output: &Path, paths: &[String]) {
-    let file = fs::File::create(output).unwrap_or_else(|e| {
-        eprintln!("Error: cannot create output '{}': {}", output.display(), e);
-        std::process::exit(1);
-    });
-
-    let mut zip = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().unix_permissions(0o644);
-
-    let manifest = input.join("fxmanifest.lua");
-    if manifest.exists() {
-        zip.start_file("fxmanifest.lua", options).unwrap();
-        zip.write_all(&read_file_bytes(&manifest)).unwrap();
-    }
-
-    for p in paths {
-        let full = input.join(p);
-        zip.start_file(p, options).unwrap();
-        zip.write_all(&read_file_bytes(&full)).unwrap();
-        println!("  packed: {}", p);
-    }
-
-    zip.finish().unwrap();
-}
-
-fn pack_targz(input: &Path, output: &Path, paths: &[String]) {
-    let file = fs::File::create(output).unwrap_or_else(|e| {
-        eprintln!("Error: cannot create output '{}': {}", output.display(), e);
-        std::process::exit(1);
-    });
-
-    let encoder = GzEncoder::new(file, Compression::default());
-    let mut tar = tar::Builder::new(encoder);
-
-    let manifest = input.join("fxmanifest.lua");
-    if manifest.exists() {
-        let bytes = read_file_bytes(&manifest);
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_mode(0o644);
-        header.set_size(bytes.len() as u64);
-        tar.append_data(&mut header, "fxmanifest.lua", &bytes[..])
-            .unwrap();
-    }
-
-    for p in paths {
-        let full = input.join(p);
-        let bytes = read_file_bytes(&full);
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_mode(0o644);
-        header.set_size(bytes.len() as u64);
-        tar.append_data(&mut header, p, &bytes[..]).unwrap();
-        println!("  packed: {}", p);
-    }
-
-    tar.finish().unwrap();
-}
-
-fn create_pack(input: &Path, output: &Path, paths: &[String]) {
-    let name = output.to_string_lossy();
-    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-        pack_targz(input, output, paths);
-    } else if name.ends_with(".zip") {
-        pack_zip(input, output, paths);
-    } else {
-        eprintln!("Error: unsupported format '{}' (use .zip, .tar.gz, or .tgz)", name);
-        std::process::exit(1);
-    }
-}
-
-fn pack_resource(input: &Path, output_dir: &Path, name: &str, version: &str) {
-    if !input.is_dir() {
-        eprintln!("Error: input '{}' is not a directory", input.display());
-        std::process::exit(1);
-    }
-
-    println!("Packing resource: {}", input.display());
-    println!("Name: {}-{}", name, version);
-
-    let filename = format!("{}-{}.zip", name, version);
-    let output_path = output_dir.join(&filename);
-
-    display_files(input);
-
-    let paths = validate_manifest_files(input);
-    println!("\nCreating pack...");
-    create_pack(input, &output_path, &paths);
-
-    println!("\nOutput: {}", output_path.display());
-    println!("Pack command executed successfully");
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Pack { input, output, name, version } => {
+        Commands::Pack {
+            input,
+            output,
+            name,
+            version,
+            summary,
+            dry_run,
+        } => {
             let input_path = Path::new(input);
             let output_dir = Path::new(output);
-            pack_resource(input_path, output_dir, name, version);
+
+            let zip_filename = format!("{}-{}.zip", name, version);
+            let zip_path = output_dir.join(&zip_filename);
+
+            let matcher = TrekPackMatcher::new(input_path);
+
+            let mut files_to_pack: Vec<(PathBuf, u64)> = Vec::new();
+
+            for entry in WalkDir::new(input_path)
+                .into_iter()
+                .filter_entry(|e| !e.file_name().to_str().is_some_and(|s| s == ".trek-pack"))
+            {
+                let entry = entry.expect("Failed to read entry");
+                if entry.file_type().is_file() {
+                    let relative_path = entry.path().strip_prefix(input_path).unwrap();
+                    if matcher.matches(relative_path) {
+                        let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                        files_to_pack.push((entry.path().to_path_buf(), size));
+                    }
+                }
+            }
+
+            if *dry_run {
+                print_dry_run(name, version, &zip_path, &files_to_pack, &input_path);
+                return;
+            }
+
+            if let Some(parent) = zip_path.parent() {
+                fs::create_dir_all(parent).expect("Failed to create output directory");
+            }
+
+            let file = File::create(&zip_path).expect("Failed to create zip file");
+            let mut zip = ZipWriter::new(file);
+
+            let options: FileOptions<'_, ()> =
+                FileOptions::default().compression_method(CompressionMethod::Deflated);
+
+            for (file_path, _size) in &files_to_pack {
+                let relative_path = file_path.strip_prefix(input_path).unwrap();
+                let relative_str = relative_path.to_str().unwrap();
+
+                zip.start_file(relative_str, options.clone())
+                    .expect("Failed to start zip entry");
+
+                let mut f = File::open(file_path).expect("Failed to open file");
+                let mut buffer = Vec::new();
+                f.read_to_end(&mut buffer).expect("Failed to read file");
+                zip.write_all(&buffer).expect("Failed to write to zip");
+            }
+
+            zip.finish().expect("Failed to finalize zip file");
+
+            let total_size: u64 = files_to_pack.iter().map(|(_, s)| s).sum();
+            println!(
+                "Created: {} ({} files, {})",
+                zip_path.display(),
+                files_to_pack.len(),
+                format_size(total_size)
+            );
+
+            if *summary {
+                print_summary(name, version, &zip_path, &files_to_pack, &input_path);
+            }
         }
+    }
+}
+
+struct TrekPackMatcher {
+    include: GlobSet,
+    exclude: GlobSet,
+    has_patterns: bool,
+}
+
+impl TrekPackMatcher {
+    fn new(input_dir: &Path) -> Self {
+        let trek_pack_path = input_dir.join(".trek-pack");
+        let mut include_builder = GlobSetBuilder::new();
+        let mut exclude_builder = GlobSetBuilder::new();
+        let mut has_patterns = false;
+
+        if let Ok(content) = std::fs::read_to_string(&trek_pack_path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some(pattern) = line.strip_prefix('!') {
+                    if let Ok(glob) = Glob::new(pattern) {
+                        exclude_builder.add(glob);
+                    }
+                } else if let Ok(glob) = Glob::new(line) {
+                    include_builder.add(glob);
+                    has_patterns = true;
+                }
+            }
+        }
+
+        Self {
+            include: include_builder
+                .build()
+                .unwrap_or_else(|_| GlobSetBuilder::new().build().unwrap()),
+            exclude: exclude_builder
+                .build()
+                .unwrap_or_else(|_| GlobSetBuilder::new().build().unwrap()),
+            has_patterns,
+        }
+    }
+
+    fn matches(&self, path: &Path) -> bool {
+        if !self.has_patterns {
+            return true;
+        }
+        if self.exclude.is_match(path) {
+            return false;
+        }
+        self.include.is_match(path)
+    }
+}
+
+fn format_size(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+    let mut size = size as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{} {}", size as u64, UNITS[unit_idx])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit_idx])
+    }
+}
+
+fn print_dry_run(
+    name: &str,
+    version: &str,
+    zip_path: &Path,
+    files: &[(PathBuf, u64)],
+    input_path: &Path,
+) {
+    let total_size: u64 = files.iter().map(|(_, s)| s).sum();
+    println!("# Dry Run");
+    println!();
+    println!("| | |");
+    println!("|---|---|");
+    println!("| **Name** | {name} |");
+    println!("| **Version** | {version} |");
+    println!("| **Would create** | `{}` |", zip_path.display());
+    println!("| **Total files** | {} |", files.len());
+    println!("| **Total size** | {} |", format_size(total_size));
+    println!();
+    println!("## Files");
+    println!();
+    println!("| File | Size |");
+    println!("|---|---:|");
+    for (path, size) in files {
+        let relative = path.strip_prefix(input_path).unwrap().to_str().unwrap();
+        println!("| `{relative}` | {} |", format_size(*size));
+    }
+}
+
+fn print_summary(
+    name: &str,
+    version: &str,
+    zip_path: &Path,
+    files: &[(PathBuf, u64)],
+    input_path: &Path,
+) {
+    let total_size: u64 = files.iter().map(|(_, s)| s).sum();
+    println!();
+    println!("# Pack Summary");
+    println!();
+    println!("| | |");
+    println!("|---|---|");
+    println!("| **Name** | {name} |");
+    println!("| **Version** | {version} |");
+    println!("| **Output** | `{}` |", zip_path.display());
+    println!("| **Total files** | {} |", files.len());
+    println!("| **Total size** | {} |", format_size(total_size));
+    println!();
+    println!("## Files");
+    println!();
+    println!("| File | Size |");
+    println!("|---|---:|");
+    for (path, size) in files {
+        let relative = path.strip_prefix(input_path).unwrap().to_str().unwrap();
+        println!("| `{relative}` | {} |", format_size(*size));
     }
 }
