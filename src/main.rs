@@ -113,16 +113,16 @@ fn main() {
 
             zip.finish().expect("Failed to finalize zip file");
 
-            let total_size: u64 = files_to_pack.iter().map(|(_, s)| s).sum();
-            println!(
-                "Created: {} ({} files, {})",
-                zip_path.display(),
-                files_to_pack.len(),
-                format_size(total_size)
-            );
-
             if *summary {
                 print_summary(name, version, &zip_path, &files_to_pack, &input_path);
+            } else {
+                let total_size: u64 = files_to_pack.iter().map(|(_, s)| s).sum();
+                println!(
+                    "Created: {} ({} files, {})",
+                    zip_path.display(),
+                    files_to_pack.len(),
+                    format_size(total_size)
+                );
             }
         }
     }
@@ -195,7 +195,9 @@ fn format_size(size: u64) -> String {
     }
 }
 
-fn print_dry_run(
+fn print_file_table(
+    title: &str,
+    extra_label: &str,
     name: &str,
     version: &str,
     zip_path: &Path,
@@ -203,13 +205,13 @@ fn print_dry_run(
     input_path: &Path,
 ) {
     let total_size: u64 = files.iter().map(|(_, s)| s).sum();
-    println!("# Dry Run");
+    println!("# {title}");
     println!();
-    println!("| | |");
+    println!("|Key|Value|");
     println!("|---|---|");
     println!("| **Name** | {name} |");
     println!("| **Version** | {version} |");
-    println!("| **Would create** | `{}` |", zip_path.display());
+    println!("| **{extra_label}** | `{}` |", zip_path.display());
     println!("| **Total files** | {} |", files.len());
     println!("| **Total size** | {} |", format_size(total_size));
     println!();
@@ -223,6 +225,16 @@ fn print_dry_run(
     }
 }
 
+fn print_dry_run(
+    name: &str,
+    version: &str,
+    zip_path: &Path,
+    files: &[(PathBuf, u64)],
+    input_path: &Path,
+) {
+    print_file_table("Dry Run", "Would create", name, version, zip_path, files, input_path);
+}
+
 fn print_summary(
     name: &str,
     version: &str,
@@ -230,24 +242,6 @@ fn print_summary(
     files: &[(PathBuf, u64)],
     input_path: &Path,
 ) {
-    let total_size: u64 = files.iter().map(|(_, s)| s).sum();
     println!();
-    println!("# Pack Summary");
-    println!();
-    println!("| | |");
-    println!("|---|---|");
-    println!("| **Name** | {name} |");
-    println!("| **Version** | {version} |");
-    println!("| **Output** | `{}` |", zip_path.display());
-    println!("| **Total files** | {} |", files.len());
-    println!("| **Total size** | {} |", format_size(total_size));
-    println!();
-    println!("## Files");
-    println!();
-    println!("| File | Size |");
-    println!("|---|---:|");
-    for (path, size) in files {
-        let relative = path.strip_prefix(input_path).unwrap().to_str().unwrap();
-        println!("| `{relative}` | {} |", format_size(*size));
-    }
+    print_file_table("Pack Summary", "Output", name, version, zip_path, files, input_path);
 }
