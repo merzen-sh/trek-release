@@ -22,7 +22,7 @@ enum Commands {
     /// Package a FiveM resource for release
     Pack {
         /// Input resource directory
-        #[arg(short, long)]
+        #[arg(short, long,default_value = ".")]
         input: String,
 
         /// Output directory
@@ -33,9 +33,9 @@ enum Commands {
         #[arg(short, long)]
         name: String,
 
-        /// Package version
+        /// Package version (optional — if omitted, output will be <name>.zip)
         #[arg(short, long)]
-        version: String,
+        version: Option<String>,
 
         /// Print a markdown summary of the packed files
         #[arg(short, long)]
@@ -62,7 +62,11 @@ fn main() {
             let input_path = Path::new(input);
             let output_dir = Path::new(output);
 
-            let zip_filename = format!("{}-{}.zip", name, version);
+            let zip_filename = if let Some(v) = version {
+                format!("{}-{}.zip", name, v)
+            } else {
+                format!("{}.zip", name)
+            };
             let zip_path = output_dir.join(&zip_filename);
 
             let matcher = TrekPackMatcher::new(input_path);
@@ -84,7 +88,7 @@ fn main() {
             }
 
             if *dry_run {
-                print_dry_run(name, version, &zip_path, &files_to_pack, &input_path);
+                print_dry_run(name, version.as_deref(), &zip_path, &files_to_pack, &input_path);
                 return;
             }
 
@@ -114,7 +118,7 @@ fn main() {
             zip.finish().expect("Failed to finalize zip file");
 
             if *summary {
-                print_summary(name, version, &zip_path, &files_to_pack, &input_path);
+                print_summary(name, version.as_deref(), &zip_path, &files_to_pack, &input_path);
             } else {
                 let total_size: u64 = files_to_pack.iter().map(|(_, s)| s).sum();
                 println!(
@@ -199,7 +203,7 @@ fn print_file_table(
     title: &str,
     extra_label: &str,
     name: &str,
-    version: &str,
+    version: Option<&str>,
     zip_path: &Path,
     files: &[(PathBuf, u64)],
     input_path: &Path,
@@ -210,7 +214,7 @@ fn print_file_table(
     println!("|Key|Value|");
     println!("|---|---|");
     println!("| **Name** | {name} |");
-    println!("| **Version** | {version} |");
+    println!("| **Version** | {} |", version.unwrap_or("-"));
     println!("| **{extra_label}** | `{}` |", zip_path.display());
     println!("| **Total files** | {} |", files.len());
     println!("| **Total size** | {} |", format_size(total_size));
@@ -227,7 +231,7 @@ fn print_file_table(
 
 fn print_dry_run(
     name: &str,
-    version: &str,
+    version: Option<&str>,
     zip_path: &Path,
     files: &[(PathBuf, u64)],
     input_path: &Path,
@@ -237,7 +241,7 @@ fn print_dry_run(
 
 fn print_summary(
     name: &str,
-    version: &str,
+    version: Option<&str>,
     zip_path: &Path,
     files: &[(PathBuf, u64)],
     input_path: &Path,
